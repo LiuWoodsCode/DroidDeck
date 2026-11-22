@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checkout=$1
+shift
+run=/run/droiddeck-build
+export DOCKER_HOST="unix://$run/docker.sock"
+for attempt in {1..60}; do
+    if docker info --format '{{.ServerVersion}}' >/dev/null 2>&1; then break; fi
+    sleep 0.25
+done
+if ! docker info --format '{{.ServerVersion}}' >/dev/null; then
+    tail -n 20 "$run/init.log" "$run/docker.log" 2>/dev/null || true
+    exit 1
+fi
+
+stop_docker() {
+    touch "$run/stop"
+    for attempt in {1..100}; do
+        [[ ! -e "$run/stopped" ]] || return 0
+        sleep 0.25
+    done
+    tail -n 12 "$run/docker.log" >&2
+}
+trap stop_docker EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+binfmt_image=docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+docker run --privileged --rm "$binfmt_image" --install amd64 >/dev/null
+export QEMU_LD_PREFIX="${FEX_ROOTFS:-$HOME/.local/share/fex-emu/RootFS/ArchLinux}"
+cd "$checkout"
+if (($# == 0)); then
+    set -- tools/build_local.sh
+fi
+"$@"

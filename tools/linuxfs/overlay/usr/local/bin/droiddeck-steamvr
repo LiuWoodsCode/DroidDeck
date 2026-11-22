@@ -7,6 +7,8 @@ driver=$vrdir/droiddeck
 layer=$vrdir/layer
 logs=$HOME/.local/share/Steam/logs
 state=${XDG_RUNTIME_DIR:-/tmp}/droiddeck-steamvr
+registry=$state/openvrpaths.vrpath
+default_registry=$HOME/.config/openvr/openvrpaths.vrpath
 umask 077
 mkdir -p "$state"
 chmod 700 "$state"
@@ -41,18 +43,24 @@ configure_graphics() {
 }
 
 unregister() {
-    if grep -qF "\"$steamvr\"" "$HOME/.config/openvr/openvrpaths.vrpath" 2>/dev/null; then
-        rm -f "$HOME/.config/openvr/openvrpaths.vrpath"
+    rm -f "$registry"
+    if grep -qF "\"$steamvr\"" "$default_registry" 2>/dev/null; then
+        rm -f "$default_registry"
     fi
     case "$(readlink "$HOME/.config/openxr/1/active_runtime.json" 2>/dev/null)" in
     "$steamvr"/*) rm -f "$HOME/.config/openxr/1/active_runtime.json" ;;
     esac
 }
 
-idle() {
-    [ ! -f "$state/active" ] && ! running && ! pgrep -x vrstartup >/dev/null 2>&1 &&
-        ( flock -n 9 ) 9>"$state/start.lock"
-}
+cleanup_idle_registration() (
+    exec 9>"$state/start.lock"
+    flock -n 9 || exit 0
+    if running || pgrep -x vrstartup >/dev/null 2>&1; then exit 0; fi
+    if [ "$1" = status ] && [ -n "$(find "$state/active" -mmin +2 2>/dev/null)" ]; then
+        rm -f "$state/active"
+    fi
+    if [ ! -f "$state/active" ]; then unregister; fi
+)
 
 stop() {
     rm -f "$state/active"
@@ -86,8 +94,7 @@ launch)
 status)
     i=0; installed && i=1
     r=0; running && r=1
-    if [ "$r" = 0 ] && [ -n "$(find "$state/active" -mmin +2 2>/dev/null)" ]; then rm -f "$state/active"; fi
-    if idle; then unregister; fi
+    if [ "$r" = 0 ]; then cleanup_idle_registration status; fi
     n=0; [ -f "$state/installing" ] && n=1
     d=0; [ -f "$driver/bin/linuxarm64/driver_droiddeck.so" ] && [ -f "$layer/libVkLayer_droiddeck_vr.so" ] && d=1
     echo "installed=$i running=$r installing=$n driver=$d"
@@ -112,10 +119,12 @@ install)
     echo "SteamVR installed in $steamvr"
     ;;
 stop)
+    exec 9>"$state/start.lock"
+    flock -n 9 || { echo "SteamVR start or stop already in progress" >&2; exit 1; }
     stop || exit 1
     ;;
 unregister)
-    if idle; then unregister; fi
+    cleanup_idle_registration unregister
     ;;
 start)
     exec 9>"$state/start.lock"
@@ -175,7 +184,7 @@ except FileNotFoundError:
 except OSError as error:
     print("Could not remove SteamVR's crash marker: " + str(error), file=sys.stderr)
 PY
-    cat > "$HOME/.config/openvr/openvrpaths.vrpath" <<JSON
+    cat > "$registry" <<JSON || exit 1
 {
   "config": ["$HOME/.local/share/Steam/config"],
   "external_drivers": ["$driver"],
@@ -185,7 +194,8 @@ PY
   "version": 1
 }
 JSON
-    ln -sf "$steamvr/steamxr_linuxarm64.json" "$HOME/.config/openxr/1/active_runtime.json"
+    cp "$registry" "$default_registry" || exit 1
+    ln -sf "$steamvr/steamxr_linuxarm64.json" "$HOME/.config/openxr/1/active_runtime.json" || exit 1
     chaperone=$HOME/.local/share/Steam/config/chaperone_info.vrchap
     [ -s "$chaperone" ] || cat > "$chaperone" <<'JSON'
 {
@@ -245,7 +255,7 @@ JSON
     cd "$steamvr/bin/linuxarm64" || exit 1
     startup_log=$logs/droiddeck-vrstartup.log
     ln -sf "$startup_log" "$state/vrstartup.log"
-    setsid ./vrstartup 8>&- 9>&- > "$startup_log" 2>&1 < /dev/null &
+    VR_PATHREG_OVERRIDE="$registry" setsid ./vrstartup 8>&- 9>&- > "$startup_log" 2>&1 < /dev/null &
     startup_handed_off=1
     echo "SteamVR starting; logs in $logs and $state/vrstartup.log"
     ;;

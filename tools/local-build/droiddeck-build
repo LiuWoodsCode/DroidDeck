@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checkout=$(git rev-parse --show-toplevel)
+state="$HOME/.local/share/droiddeck-build"
+helpers=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+[[ -f "$state/docker.ext4" ]] || { echo "Missing muvm Docker disk at $state/docker.ext4" >&2; exit 1; }
+exec 9> "$state/docker.lock"
+if ! flock -n 9; then
+    echo 'DroidDeck already has a build VM running.' >&2
+    exit 1
+fi
+
+install -m 755 "$helpers/start-docker" "$state/start-docker-split"
+
+runtime=$(mktemp -d "${XDG_RUNTIME_DIR:?}/droiddeck-build.XXXXXX")
+trap 'rm -rf -- "$runtime"' EXIT
+export XDG_RUNTIME_DIR="$runtime"
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+export GRADLE_OPTS="${GRADLE_OPTS:--Dorg.gradle.jvmargs='-Xmx2g -Dfile.encoding=UTF-8' -Dorg.gradle.workers.max=2}"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+
+guest_env=(-e JAVA_HOME -e ANDROID_HOME -e PATH -e GRADLE_OPTS -e CARGO_BUILD_JOBS)
+for key in DROIDDECK_BUILD_VARIANT DROIDDECK_NDK_VERSION DROIDDECK_BUILD_CACHE DROIDDECK_SKIP_RUST GH_TOKEN GITHUB_TOKEN FEX_ROOTFS; do
+    if [[ -v "$key" ]]; then guest_env+=(-e "$key"); fi
+done
+
+muvm --gpu-mode=software --mem="${DROIDDECK_MUVM_MEMORY:-4096}" -i -x "$state/start-docker-split" "${guest_env[@]}" -- \
+    /bin/bash "$helpers/run-build" "$checkout" "$@"

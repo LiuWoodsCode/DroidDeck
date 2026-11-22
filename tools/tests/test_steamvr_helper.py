@@ -238,6 +238,28 @@ class SteamVrHelperTest(unittest.TestCase):
             self.assertFalse(vrpath.exists(), action)
             self.assertFalse(xr.is_symlink(), action)
 
+    def test_idle_cleanup_rechecks_active_after_taking_the_start_lock(self):
+        self.start()
+        active = self.runtime / 'droiddeck-steamvr/active'
+        active.unlink()
+        self.executable(self.commands / 'flock',
+                        '"$REAL_FLOCK" "$@" || exit $?\n: > "$XDG_RUNTIME_DIR/droiddeck-steamvr/active"')
+        self.environment['REAL_FLOCK'] = shutil.which('flock')
+        self.helper_action('unregister')
+        self.assertTrue(self.registration()[0].is_file())
+        self.assertTrue(self.registration()[1].is_symlink())
+
+    def test_steamvr_starts_with_its_own_registry_if_the_default_is_removed(self):
+        self.executable(self.steamvr / 'bin/linuxarm64/vrstartup',
+                        'rm "$HOME/.config/openvr/openvrpaths.vrpath"\n'
+                        '[ -s "${VR_PATHREG_OVERRIDE:-}" ] || exit 1\n'
+                        'echo "display=$VR_PATHREG_OVERRIDE"')
+        registry = self.runtime / 'droiddeck-steamvr/openvrpaths.vrpath'
+        self.assertEqual(self.start().read_text().strip(), f'display={registry}')
+        self.assertEqual(json.loads(registry.read_text())['external_drivers'], [str(self.driver.parent.parent)])
+        self.helper_action('stop')
+        self.assertFalse(registry.exists())
+
     def test_unregister_leaves_another_runtime_alone(self):
         vrpath, xr = self.registration()
         vrpath.parent.mkdir(parents=True)

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+mount_dir=$(mktemp -d "${TMPDIR:-/tmp}/droiddeck-binfmt.XXXXXX")
+cleanup() {
+    umount "$mount_dir" 2>/dev/null || true
+    rmdir "$mount_dir"
+}
+trap cleanup EXIT
+mount -t binfmt_misc binfmt_misc "$mount_dir"
+[[ ! -e "$mount_dir/FEX-x86_64" ]]
+interpreter="$HOME/.local/opt/droiddeck-native/qemu-user/usr/bin/qemu-x86_64"
+magic='\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00'
+mask='\xff\xff\xff\xff\xff\xfe\xfe\x00\x00\x00\x00\x00\x00\x00\x00\x00\xfe\xff\xff\xff'
+printf ':droiddeck-x86_64:M::%s:%s:%s:F\n' "$magic" "$mask" "$interpreter" > "$mount_dir/register"
+export QEMU_LD_PREFIX="$HOME/.local/share/fex-emu/RootFS/ArchLinux"
+"$@"

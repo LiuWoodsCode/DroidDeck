@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state=$(dirname -- "$0")
+run=/run/droiddeck-build
+group=$(stat -c %g "$0")
+install -d -m 0770 -g "$group" "$run"
+exec > "$run/init.log" 2>&1
+mkdir "$run/data"
+mount -t ext4 -o loop "$state/docker.ext4" "$run/data"
+sysctl -w net.ipv4.ip_forward=1
+printf '{}\n' > "$run/docker.json"
+
+(
+    dockerd --host "unix://$run/docker.sock" --group "$group" \
+        --config-file "$run/docker.json" --data-root "$run/data" \
+        --exec-root "$run/exec" --pidfile "$run/docker.pid" --firewall-backend nftables &
+    daemon=$!
+    while [[ ! -e "$run/stop" ]] && kill -0 "$daemon" 2>/dev/null; do
+        sleep 1
+    done
+    if [[ -e "$run/stop" ]]; then
+        kill -TERM "$daemon" 2>/dev/null || true
+    fi
+    wait "$daemon" || true
+    sync -f "$run/data"
+    for attempt in {1..40}; do
+        if umount "$run/data"; then
+            sync -f "$state/docker.ext4"
+            touch "$run/stopped"
+            exit 0
+        fi
+        sleep 0.25
+    done
+    exit 1
+) < /dev/null > "$run/docker.log" 2>&1 &

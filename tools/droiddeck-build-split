@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+helpers="$PWD/tools/local-build"
+export DROIDDECK_BUILD_VARIANT=release
+if [[ -z ${JAVA_HOME:-} ]]; then
+    JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+fi
+export JAVA_HOME
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export DROIDDECK_NDK_VERSION="${DROIDDECK_NDK_VERSION:-27.3.13750724}"
+export NDK="$ANDROID_HOME/ndk/$DROIDDECK_NDK_VERSION"
+export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${DROIDDECK_BUILD_CACHE:-$HOME/.cache/droiddeck-build}/stores-target}"
+
+if [[ $(uname -m) == x86_64 ]]; then
+    export DROIDDECK_DOCKER_PLATFORM="${DROIDDECK_DOCKER_PLATFORM:-linux/arm64}"
+    exec bash tools/build_local.sh
+fi
+
+DROIDDECK_MUVM_MEMORY="${DROIDDECK_MUVM_MEMORY:-2048}" bash "$helpers/droiddeck-build" bash "$helpers/prepare"
+
+tree_status=$(git status --porcelain)
+export DROIDDECK_BUILD_TREE_STATE=clean
+if [[ -n "$tree_status" ]]; then export DROIDDECK_BUILD_TREE_STATE=dirty; fi
+export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Duser.home=$HOME -Duser.name=$(id -un)"
+export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+
+systemd-run --user --scope --quiet --expand-environment=no -p MemoryMax=4800M -p MemorySwapMax=512M \
+    flock -n "$HOME/.local/share/droiddeck-build/docker.lock" \
+    unshare --user --map-root-user --mount --propagation private \
+    bash "$helpers/namespace" bash -ec '
+        gradle=(./gradlew --no-daemon --console=plain --max-workers=1 --no-parallel
+                -Pkotlin.compiler.execution.strategy=in-process)
+        "${gradle[@]}" "-Dorg.gradle.jvmargs=-Xmx3800m -XX:+UseSerialGC -Dfile.encoding=UTF-8" \
+            :app:compileReleaseKotlin :app:lintVitalRelease
+        "${gradle[@]}" "-Dorg.gradle.jvmargs=-Xmx3000m -XX:+UseSerialGC -Dfile.encoding=UTF-8" \
+            assembleRelease
+        repo_root=$PWD sdk_dir=$ANDROID_HOME build_variant=release
+        staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/droiddeck-finalize.XXXXXX")
+        trap '\''rm -rf -- "$staging_dir"'\'' EXIT
+        export TAR_OPTIONS=--no-same-owner
+        . "$1/finalize"
+    ' bash "$helpers"
