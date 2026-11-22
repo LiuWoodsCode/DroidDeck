@@ -19,14 +19,16 @@ if not (source / '.prepared').is_file():
     if source.exists():
         raise RuntimeError('Incomplete Xbox source directory; inspect it before retrying: ' + str(source))
     source.mkdir(parents=True)
+    # A host-mounted cache can report the host UID to Git running as container root.
+    git = ['git', '-c', f'safe.directory={source}', '-C', str(source)]
     # Nexus keeps its Xodus changes as commits in its backend fork (since 0.2.15), not as patch files.
-    subprocess.run(['git', 'init', '-q', str(source)], check=True)
-    subprocess.run(['git', '-C', str(source), 'fetch', '-q', '--depth', '1', lock['repository'], lock['commit']], check=True)
-    subprocess.run(['git', '-C', str(source), 'checkout', '-q', '--detach', 'FETCH_HEAD'], check=True)
-    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == lock['commit']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'fetch', '-q', '--depth', '1', lock['repository'], lock['commit']], check=True)
+    subprocess.run([*git, 'checkout', '-q', '--detach', 'FETCH_HEAD'], check=True)
+    assert subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip() == lock['commit']
     assert hashlib.sha256((source / 'Cargo.lock').read_bytes()).hexdigest() == lock['cargoLockSha256']
     for name in local_patches:
-        subprocess.run(['git', '-C', str(source), 'apply', str(recipe / name)], check=True)
+        subprocess.run([*git, 'apply', str(recipe / name)], check=True)
     (source / '.prepared').write_text(identity + '\n')
 assert (source / '.prepared').read_text().strip() == identity
 print(source)
